@@ -6,7 +6,7 @@ cat << 'EOF' > .gitignore
 *.so
 *.dylib
 bin/
-api
+/api
 
 # Test artifacts
 *.test
