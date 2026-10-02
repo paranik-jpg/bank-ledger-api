@@ -19,7 +19,7 @@ jobs:
       postgres:
         image: postgres:15-alpine
         env:
-          POSTGRES_USER: postgres
+          POSTGRES_USER: nikhil
           POSTGRES_PASSWORD: Mahi1234
           POSTGRES_DB: bank_ledger
         ports:
