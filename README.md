@@ -1,196 +1,400 @@
-[![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/golang-migrate/migrate/ci.yaml?branch=master)](https://github.com/golang-migrate/migrate/actions/workflows/ci.yaml?query=branch%3Amaster)
-[![GoDoc](https://pkg.go.dev/badge/github.com/golang-migrate/migrate)](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)
-[![Coverage Status](https://img.shields.io/coveralls/github/golang-migrate/migrate/master.svg)](https://coveralls.io/github/golang-migrate/migrate?branch=master)
-[![packagecloud.io](https://img.shields.io/badge/deb-packagecloud.io-844fec.svg)](https://packagecloud.io/golang-migrate/migrate?filter=debs)
-[![Docker Pulls](https://img.shields.io/docker/pulls/migrate/migrate.svg)](https://hub.docker.com/r/migrate/migrate/)
-![Supported Go Versions](https://img.shields.io/badge/Go-1.25%2C%201.26-lightgrey.svg)
-[![GitHub Release](https://img.shields.io/github/release/golang-migrate/migrate.svg)](https://github.com/golang-migrate/migrate/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/golang-migrate/migrate/v4)](https://goreportcard.com/report/github.com/golang-migrate/migrate/v4)
+# Bank Ledger API
 
-# migrate
+A REST API written in Go for user registration, JWT-based authentication, and atomic bank-account transfers backed by PostgreSQL. The project focuses on transaction safety: each transfer records a transfer row and corresponding debit/credit ledger entries while updating both account balances inside a single database transaction.
 
-__Database migrations written in Go. Use as [CLI](#cli-usage) or import as [library](#use-in-your-go-project).__
+## Features
 
-* Migrate reads migrations from [sources](#migration-sources)
-   and applies them in correct order to a [database](#databases).
-* Drivers are "dumb", migrate glues everything together and makes sure the logic is bulletproof.
-   (Keeps the drivers lightweight, too.)
-* Database drivers don't assume things or try to correct user input. When in doubt, fail.
+- **User registration** with bcrypt password hashing.
+- **Login and JWT authentication** using signed access tokens.
+- **Protected transfer endpoint** requiring a `Bearer` token.
+- **Atomic money transfers** implemented with PostgreSQL transactions.
+- **Ledger entries** recording debit and credit movements.
+- **Concurrency-aware balance updates** with a deterministic account-ID lock/update order to reduce deadlock risk.
+- **Database constraints and migrations** for schema integrity.
+- **HTTP middleware** for request logging and panic recovery.
+- **HTTP server timeouts** for read, write, and idle connections.
+- **Docker Compose** setup for the API and PostgreSQL.
+- **Automated tests** for transfer, service, and middleware behavior.
 
-Forked from [mattes/migrate](https://github.com/mattes/migrate)
+## Architecture
 
-## Databases
-
-Database drivers run migrations. [Add a new database?](database/driver.go)
-
-* [PostgreSQL](database/postgres)
-* [PGX v4](database/pgx)
-* [PGX v5](database/pgx/v5)
-* [Redshift](database/redshift)
-* [Ql](database/ql)
-* [Cassandra / ScyllaDB](database/cassandra)
-* [SQLite](database/sqlite)
-* [SQLite3](database/sqlite3) ([todo #165](https://github.com/mattes/migrate/issues/165))
-* [SQLCipher](database/sqlcipher)
-* [MySQL / MariaDB](database/mysql)
-* [Neo4j](database/neo4j)
-* [MongoDB](database/mongodb)
-* [CrateDB](database/crate) ([todo #170](https://github.com/mattes/migrate/issues/170))
-* [Shell](database/shell) ([todo #171](https://github.com/mattes/migrate/issues/171))
-* [Google Cloud Spanner](database/spanner)
-* [CockroachDB](database/cockroachdb)
-* [YugabyteDB](database/yugabytedb)
-* [ClickHouse](database/clickhouse)
-* [Firebird](database/firebird)
-* [MS SQL Server](database/sqlserver)
-* [rqlite](database/rqlite)
-
-### Database URLs
-
-Database connection strings are specified via URLs. The URL format is driver dependent but generally has the form: `dbdriver://username:password@host:port/dbname?param1=true&param2=false`
-
-Any [reserved URL characters](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_reserved_characters) need to be escaped. Note, the `%` character also [needs to be escaped](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_the_percent_character)
-
-Explicitly, the following characters need to be escaped:
-`!`, `#`, `$`, `%`, `&`, `'`, `(`, `)`, `*`, `+`, `,`, `/`, `:`, `;`, `=`, `?`, `@`, `[`, `]`
-
-It's easiest to always run the URL parts of your DB connection URL (e.g. username, password, etc) through an URL encoder. See the example Python snippets below:
-
-```bash
-$ python3 -c 'import urllib.parse; print(urllib.parse.quote(input("String to encode: "), ""))'
-String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
-FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
-$ python2 -c 'import urllib; print urllib.quote(raw_input("String to encode: "), "")'
-String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
-FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
-$
+```mermaid
+flowchart TD
+    Client[HTTP Client] --> Router[HTTP Router]
+    Router --> Recovery[Panic Recovery Middleware]
+    Recovery --> Logger[Request Logging Middleware]
+    Logger --> Public[Registration and Login]
+    Logger --> Auth[JWT Authentication Middleware]
+    Auth --> TransferHandler[Transfer Handler]
+    Public --> UserService[User and Auth Services]
+    TransferHandler --> TransferService[Transfer Service]
+    UserService --> DB[(PostgreSQL)]
+    TransferService --> DB
+    DB --> Accounts[Accounts]
+    DB --> Transfers[Transfers]
+    DB --> Entries[Ledger Entries]
 ```
 
-## Migration Sources
+The handlers validate HTTP requests and translate results into HTTP responses. Services implement application rules, while the database layer owns SQL operations and the atomic transfer transaction.
 
-Source drivers read migrations from local or remote sources. [Add a new source?](source/driver.go)
+## Tech Stack
 
-* [Filesystem](source/file) - read from filesystem
-* [io/fs](source/iofs) - read from a Go [io/fs](https://pkg.go.dev/io/fs#FS)
-* [Go-Bindata](source/go_bindata) - read from embedded binary data ([jteeuwen/go-bindata](https://github.com/jteeuwen/go-bindata))
-* [pkger](source/pkger) - read from embedded binary data ([markbates/pkger](https://github.com/markbates/pkger))
-* [GitHub](source/github) - read from remote GitHub repositories
-* [GitHub Enterprise](source/github_ee) - read from remote GitHub Enterprise repositories
-* [Bitbucket](source/bitbucket) - read from remote Bitbucket repositories
-* [Gitlab](source/gitlab) - read from remote Gitlab repositories
-* [AWS S3](source/aws_s3) - read from Amazon Web Services S3
-* [Google Cloud Storage](source/google_cloud_storage) - read from Google Cloud Platform Storage
+- Go
+- `net/http` for HTTP routing and server behavior
+- PostgreSQL
+- `github.com/jackc/pgx/v5` for PostgreSQL connectivity
+- `github.com/golang-jwt/jwt/v5` for JWTs
+- `golang.org/x/crypto/bcrypt` for password hashing
+- `golang-migrate` migration files
+- Docker and Docker Compose
 
-## CLI usage
+## Prerequisites
 
-* Simple wrapper around this library.
-* Handles ctrl+c (SIGINT) gracefully.
-* No config search paths, no config files, no magic ENV var injections.
+For the containerized setup:
 
-[CLI Documentation](cmd/migrate) (includes CLI install instructions)
+- Docker Engine
+- Docker Compose plugin
 
-### Basic usage
+For running the API directly:
+
+- A Go toolchain compatible with `go.mod`
+- PostgreSQL
+- The `migrate` CLI if you want to run migrations with the Makefile
+
+## Getting Started
+
+### 1. Clone the repository
 
 ```bash
-$ migrate -source file://path/to/migrations -database postgres://localhost:5432/database up 2
+git clone <repository-url>
+cd bank-ledger-api
 ```
 
-### Docker usage
+Replace `<repository-url>` with the repository's actual Git URL.
+
+### 2. Configure secrets before running
+
+The checked-in Compose configuration contains development credentials and a fallback JWT secret. **Do not use those values in production.** Change them before exposing the service, and avoid committing real secrets.
+
+The application supports these environment variables:
+
+| Variable | Purpose | Default / behavior |
+|---|---|---|
+| `PORT` | HTTP listening port | `:8080` |
+| `DATABASE_URL` | PostgreSQL connection URL | Falls back to `DB_URL`, then a development URL in `main.go` |
+| `DB_URL` | Alternative PostgreSQL connection URL | Used when `DATABASE_URL` is unset |
+| `JWT_SECRET` | HMAC signing secret for access tokens | Development fallback in `main.go`; set a strong secret explicitly |
+
+The connection URL must be reachable from where the API runs. Inside Compose, the database hostname is the service name `postgres`; from your host machine, it is normally `localhost`.
+
+### 3. Start with Docker Compose
+
+Review and update the credentials and `JWT_SECRET` in `docker-compose.yml`, then run:
 
 ```bash
-$ docker run -v {{ migration dir }}:/migrations --network host migrate/migrate
-    -path=/migrations/ -database postgres://localhost:5432/database up 2
+docker compose up --build
 ```
 
-## Use in your Go project
+Compose starts PostgreSQL and waits for its health check before starting the API.
 
-* API is stable and frozen for this release (v3 & v4).
-* Uses [Go modules](https://golang.org/cmd/go/#hdr-Modules__module_versions__and_more) to manage dependencies.
-* To help prevent database corruptions, it supports graceful stops via `GracefulStop chan bool`.
-* Bring your own logger.
-* Uses `io.Reader` streams internally for low memory overhead.
-* Thread-safe and no goroutine leaks.
+| Service | Host address | Purpose |
+|---|---|---|
+| API | `http://localhost:8080` | HTTP endpoints |
+| PostgreSQL | `localhost:5432` | Persistent database |
 
-__[Go Documentation](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)__
+The Compose file stores PostgreSQL data in the named volume `data-volume`.
 
-```go
-import (
-    "github.com/golang-migrate/migrate/v4"
-    _ "github.com/golang-migrate/migrate/v4/database/postgres"
-    _ "github.com/golang-migrate/migrate/v4/source/github"
-)
+Stop the services:
 
-func main() {
-    m, err := migrate.New(
-        "github://mattes:personal-access-token@mattes/migrate_test",
-        "postgres://localhost:5432/database?sslmode=enable")
-    m.Steps(2)
+```bash
+docker compose down
+```
+
+To also delete the database volume and its stored data:
+
+```bash
+docker compose down --volumes
+```
+
+**Warning:** removing the volume permanently deletes the local database contents.
+
+### 4. Run locally without Docker (optional)
+
+Start PostgreSQL and create a database/user, then export the connection settings. For example:
+
+```bash
+export PORT=8080
+export DATABASE_URL='postgresql://<user>:<password>@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia%2FKolkata'
+export JWT_SECRET='<replace-with-a-long-random-secret>'
+```
+
+Replace the placeholders with your local database credentials. URL-encode reserved characters in the username or password when placing them in a connection URL.
+
+Apply the migrations using the `migrate` CLI. The Makefile's `DB_URL` is currently hard-coded for the development setup, so either update that value locally or run the migration command directly with your own connection URL:
+
+```bash
+migrate -path db/migration -database "$DATABASE_URL" -verbose up
+```
+
+Start the API:
+
+```bash
+go run ./cmd/api
+```
+
+## API Reference
+
+All request and response bodies use JSON unless noted otherwise. Error responses generally have this shape:
+
+```json
+{
+  "error": "Description of the problem"
 }
 ```
 
-Want to use an existing database client?
+### `POST /api/v1/users`
 
-```go
-import (
-    "database/sql"
-    _ "github.com/lib/pq"
-    "github.com/golang-migrate/migrate/v4"
-    "github.com/golang-migrate/migrate/v4/database/postgres"
-    _ "github.com/golang-migrate/migrate/v4/source/file"
-)
+Registers a new user. Passwords are hashed using bcrypt before storage.
 
-func main() {
-    db, err := sql.Open("postgres", "postgres://localhost:5432/database?sslmode=enable")
-    driver, err := postgres.WithInstance(db, &postgres.Config{})
-    m, err := migrate.NewWithDatabaseInstance(
-        "file:///migrations",
-        "postgres", driver)
-    m.Up() // or m.Steps(2) if you want to explicitly set the number of migrations to run
+Request:
+
+```json
+{
+  "username": "nikhil",
+  "email": "nikhil@example.com",
+  "password": "your-password"
 }
 ```
 
-## Getting started
+Validation performed by the handler includes a username of at least 3 characters, a parseable email address, and a password of at least 6 characters. Username and email must be unique.
 
-Go to [getting started](GETTING_STARTED.md)
+Success: `201 Created`
 
-## Tutorials
+Example response:
 
-* [CockroachDB](database/cockroachdb/TUTORIAL.md)
-* [PostgreSQL](database/postgres/TUTORIAL.md)
-
-(more tutorials to come)
-
-## Migration files
-
-Each migration has an up and down migration. [Why?](FAQ.md#why-two-separate-files-up-and-down-for-a-migration)
-
-```bash
-1481574547_create_users_table.up.sql
-1481574547_create_users_table.down.sql
+```json
+{
+  "username": "nikhil",
+  "email": "nikhil@example.com",
+  "created_at": "2026-10-13 19:30:00"
+}
 ```
 
-[Best practices: How to write migrations.](MIGRATIONS.md)
+The timestamp above is illustrative; the actual value is generated by the server.
 
-## Coming from another db migration tool?
+Common errors:
 
-Check out [migradaptor](https://github.com/musinit/migradaptor/).
-*Note: migradaptor is not affiliated or supported by this project*
+- `400 Bad Request` — malformed JSON or invalid fields
+- `409 Conflict` — username or email already exists
+- `500 Internal Server Error` — unexpected server/database error
 
-## Versions
+Example:
 
-Version | Supported? | Import | Notes
---------|------------|--------|------
-**master** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | New features and bug fixes arrive here first |
-**v4** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | Used for stable releases |
-**v3** | :x: | `import "github.com/golang-migrate/migrate"` (with package manager) or `import "gopkg.in/golang-migrate/migrate.v3"` (not recommended) | **DO NOT USE** - No longer supported |
+```bash
+curl -i -X POST http://localhost:8080/api/v1/users \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "nikhil",
+    "email": "nikhil@example.com",
+    "password": "your-password"
+  }'
+```
 
-## Development and Contributing
+### `POST /api/v1/sessions`
 
-Yes, please! [`Makefile`](Makefile) is your friend,
-read the [development guide](CONTRIBUTING.md).
+Authenticates a user and returns a signed JWT access token. The configured token lifetime is 24 hours.
 
-Also have a look at the [FAQ](FAQ.md).
+Request:
 
----
+```json
+{
+  "username": "nikhil",
+  "password": "your-password"
+}
+```
 
-Looking for alternatives? [https://awesome-go.com/#database](https://awesome-go.com/#database).
+Success: `200 OK`
+
+```json
+{
+  "access_token": "<jwt-token>",
+  "expires_at": "<expiry timestamp>"
+}
+```
+
+Common errors:
+
+- `400 Bad Request` — malformed JSON or missing credentials
+- `401 Unauthorized` — invalid username/password
+- `500 Internal Server Error` — unexpected error
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "nikhil",
+    "password": "your-password"
+  }'
+```
+
+Copy the returned `access_token` for the protected endpoint below.
+
+### `POST /api/v1/transfers`
+
+Creates a transfer between two existing accounts. This endpoint requires a valid JWT in the `Authorization` header.
+
+Request:
+
+```json
+{
+  "from_account_id": 1,
+  "to_account_id": 2,
+  "amount": 500
+}
+```
+
+The amount is represented as an integer in the currency's smallest unit (for example, paise for INR), rather than a floating-point value. Ensure both accounts use compatible currencies; currency compatibility is not currently checked by the transfer service.
+
+Success: `200 OK`
+
+```json
+{
+  "transfer_id": 1,
+  "from_account_id": 1,
+  "to_account_id": 2,
+  "amount": 500,
+  "from_balance": 4500,
+  "to_balance": 2500,
+  "created_at": "<transfer timestamp>"
+}
+```
+
+Example:
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/transfers \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <jwt-token>' \
+  -d '{
+    "from_account_id": 1,
+    "to_account_id": 2,
+    "amount": 500
+  }'
+```
+
+Common errors:
+
+- `400 Bad Request` — non-positive amount, identical source/destination accounts, or insufficient funds
+- `401 Unauthorized` — missing, malformed, invalid, or expired token
+- `404 Not Found` — one or both account IDs do not exist
+- `405 Method Not Allowed` — method other than POST
+- `500 Internal Server Error` — unexpected internal error
+
+> **Important:** the current HTTP API exposes registration, login, and transfers. Account creation/listing methods exist in the database layer, but there are no HTTP endpoints for creating or listing accounts in the current router. Seed or create test accounts through a controlled development workflow before testing transfers.
+
+### `GET /api/v1/panic-test`
+
+A testing endpoint that deliberately panics to exercise recovery middleware. It is not a business endpoint and should be removed or disabled in production.
+
+## How a Transfer Works
+
+The database layer executes the transfer as one PostgreSQL transaction:
+
+1. Validate that the amount is positive and the source and destination account IDs differ.
+2. Insert a row into `transfers`.
+3. Insert a negative ledger entry for the source account.
+4. Insert a positive ledger entry for the destination account.
+5. Update the two account balances in ascending account-ID order.
+6. Reject the transfer if either account is missing or a resulting balance is negative.
+7. Commit the transaction only if all operations succeed.
+
+If any step fails, the transaction is rolled back, so the transfer record, entries, and balance changes do not partially persist. Updating accounts in a deterministic ID order reduces deadlock risk when concurrent transfers touch the same accounts in opposite directions.
+
+The `accounts` table also has a database-level check preventing negative balances. The application uses PostgreSQL transactions at `READ COMMITTED` isolation.
+
+## Database Schema
+
+| Table | Purpose |
+|---|---|
+| `users` | Usernames, bcrypt password hashes, email addresses, creation timestamps |
+| `accounts` | Account owner, integer balance, currency, creation timestamp |
+| `transfers` | Transfer history with source, destination, amount, timestamp |
+| `entries` | Ledger movements; negative values represent debits and positive values represent credits |
+
+The migrations also add indexes for account owners, account entries, and source/destination transfer lookups. Foreign keys enforce relationships between accounts and ledger records.
+
+## Project Structure
+
+```text
+.
+├── .github/
+│   └── workflows/
+│       └── test.yml                 # CI test workflow
+├── cmd/
+│   └── api/
+│       └── main.go                  # App setup, middleware, routes, server
+├── db/
+│   └── migration/                   # Versioned up/down SQL migrations
+├── internal/
+│   ├── database/                    # PostgreSQL models, queries, transactions
+│   ├── handler/                     # HTTP handlers and JSON responses
+│   ├── middleware/                  # JWT auth, request logging, recovery
+│   └── service/                     # Registration, auth, transfer rules
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+├── go.mod
+└── go.sum
+```
+
+## Development
+
+Format the Go source:
+
+```bash
+gofmt -w ./cmd ./internal
+```
+
+Run tests:
+
+```bash
+go test ./...
+```
+
+Run tests with coverage:
+
+```bash
+go test -v -cover ./...
+```
+
+The Makefile also provides:
+
+```bash
+make test
+make run
+make migrateup
+make migratedown
+```
+
+Review the Makefile before using migration targets: its `DB_URL` is currently set to a development connection string.
+
+## Security and Production Notes
+
+This project is a learning/reference implementation and should not be exposed as a production banking service without further work.
+
+- **Secrets:** replace the committed development database credentials and fallback JWT secret. Use environment/secret management and rotate any real secret that has been committed.
+- **Database credentials in logs:** the current application logs the database URL at startup. Avoid logging connection URLs that contain credentials.
+- **JWT configuration:** use a high-entropy secret, validate token claims and expected signing algorithm, and consider key rotation and revocation requirements.
+- **Authorization model:** the transfer handler records the authenticated username as the initiator, but it does not currently verify that the user owns the source account or is authorized to operate on either account.
+- **Input limits:** request bodies are not currently bounded with `http.MaxBytesReader`, and JSON decoding does not explicitly reject trailing JSON values.
+- **Transfer semantics:** currency compatibility and idempotency keys are not implemented. A client retry after an uncertain network result could submit the same transfer twice.
+- **Ledger reconciliation:** the ledger entries are recorded transactionally, but the project does not currently expose a ledger-history endpoint or perform reconciliation.
+- **Database startup:** the app verifies PostgreSQL connectivity, but migrations are a separate operation and must be applied before the API is used.
+- **Operational readiness:** add graceful shutdown, structured/redacted logging, metrics, tracing, backup/recovery procedures, and integration tests for concurrent transfers before production use.
+- **Testing endpoint:** remove or protect `/api/v1/panic-test` in production.
+
+## License
+
+See [`LICENSE`](LICENSE) for the project's license.
