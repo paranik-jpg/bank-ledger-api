@@ -5,13 +5,13 @@ services:
     volumes:
       - data-volume:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: nikhil
-      POSTGRES_PASSWORD: Mahi1234
-      POSTGRES_DB: bank_ledger
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nikhil -d bank_ledger"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,9 +25,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DB_URL: "postgresql://nikhil:Mahi1234@postgres:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+      DB_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable&TimeZone=Asia%2FKolkata"
       PORT: "8080"
-      JWT_SECRET: "0123456789abcdef0123456789abcdef"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
     depends_on:
       postgres:
         condition: service_healthy

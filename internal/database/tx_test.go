@@ -5,60 +5,105 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgconn"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping DB test: DATABASE_URL is not set")
+	}
+
+	return dbURL
+}
+
 func TestTransferTxRollbackOnInsufficientBalance(t *testing.T) {
-	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
-	db, err := New(dbURL)
+	db, err := New(testDatabaseURL(t))
 	if err != nil {
-		t.Skip("Skipping DB test: postgres instance unreachable")
+		t.Skipf("Skipping DB test: postgres instance unreachable: %v", err)
 	}
-	defer db.Close()
-
-	ctx := context.Background()
-
-	// 1. Fetch initial balances for accounts 1 and 2
-	var balance1Before, balance2Before int64
-	err = db.QueryRowContext(ctx, "SELECT balance FROM accounts WHERE id = 1").Scan(&balance1Before)
-	if err != nil {
-		t.Skip("Account 1 not seeded; skipping live DB test")
-	}
-	err = db.QueryRowContext(ctx, "SELECT balance FROM accounts WHERE id = 2").Scan(&balance2Before)
-	if err != nil {
-		t.Skip("Account 2 not seeded; skipping live DB test")
-	}
-
-	// 2. Attempt a transfer exceeding available funds (causes error and triggers defer tx.Rollback())
-	excessiveAmount := balance1Before + 10000000
-	_, err = db.TransferTx(ctx, TransferParams{
-		FromAccountID: 1,
-		ToAccountID:   2,
-		Amount:        excessiveAmount,
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
 	})
 
-	if err == nil {
-		t.Fatalf("expected error due to insufficient funds, got nil")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	suffix := time.Now().UnixNano()
+	ownerA := fmt.Sprintf("rollback_a_%d", suffix)
+	ownerB := fmt.Sprintf("rollback_b_%d", suffix)
+
+	if _, err := db.CreateUser(ctx, ownerA, "test-hash", ownerA+"@example.com"); err != nil {
+		t.Fatalf("create first test user: %v", err)
+	}
+	if _, err := db.CreateUser(ctx, ownerB, "test-hash", ownerB+"@example.com"); err != nil {
+		t.Fatalf("create second test user: %v", err)
 	}
 
-	// 3. Confirm balances were rolled back and remain unchanged
-	var balance1After, balance2After int64
-	_ = db.QueryRowContext(ctx, "SELECT balance FROM accounts WHERE id = 1").Scan(&balance1After)
-	_ = db.QueryRowContext(ctx, "SELECT balance FROM accounts WHERE id = 2").Scan(&balance2After)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
 
-	if balance1After != balance1Before {
-		t.Fatalf("rollback failed on sender: initial %d, after %d", balance1Before, balance1After)
+		if _, err := db.ExecContext(
+			cleanupCtx,
+			"DELETE FROM users WHERE username IN ($1, $2)",
+			ownerA,
+			ownerB,
+		); err != nil {
+			t.Errorf("clean up test users: %v", err)
+		}
+	})
+
+	const initialBalance int64 = 1_000
+
+	accountA, err := db.CreateAccount(ctx, ownerA, initialBalance, "INR")
+	if err != nil {
+		t.Fatalf("create first test account: %v", err)
 	}
-	if balance2After != balance2Before {
-		t.Fatalf("rollback failed on receiver: initial %d, after %d", balance2Before, balance2After)
+	accountB, err := db.CreateAccount(ctx, ownerB, initialBalance, "INR")
+	if err != nil {
+		t.Fatalf("create second test account: %v", err)
+	}
+
+	// The transfer must fail because the requested amount exceeds the source balance.
+	_, err = db.TransferTx(ctx, TransferParams{
+		FromAccountID: accountA.ID,
+		ToAccountID:   accountB.ID,
+		Amount:        initialBalance + 1,
+		InitiatedBy:   ownerA,
+	})
+	if !errors.Is(err, ErrInsufficientFunds) {
+		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
+	}
+
+	gotA, err := db.GetAccount(ctx, accountA.ID)
+	if err != nil {
+		t.Fatalf("read source account: %v", err)
+	}
+	gotB, err := db.GetAccount(ctx, accountB.ID)
+	if err != nil {
+		t.Fatalf("read destination account: %v", err)
+	}
+
+	if gotA.Balance != initialBalance {
+		t.Errorf("rollback failed on sender: got %d, want %d", gotA.Balance, initialBalance)
+	}
+	if gotB.Balance != initialBalance {
+		t.Errorf("rollback failed on receiver: got %d, want %d", gotB.Balance, initialBalance)
 	}
 }
 
 func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
-	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+	dbURL := testDatabaseURL(t)
 
 	db, err := New(dbURL)
 	if err != nil {
@@ -211,7 +256,7 @@ func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
 }
 
 func TestTransferTxRejectsUnauthorizedInitiator(t *testing.T) {
-	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+	dbURL := testDatabaseURL(t)
 
 	db, err := New(dbURL)
 	if err != nil {
@@ -293,7 +338,7 @@ func TestTransferTxRejectsUnauthorizedInitiator(t *testing.T) {
 }
 
 func TestTransferTxRejectsCurrencyMismatch(t *testing.T) {
-	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+	dbURL := testDatabaseURL(t)
 
 	db, err := New(dbURL)
 	if err != nil {

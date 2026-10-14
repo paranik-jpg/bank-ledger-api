@@ -12,20 +12,20 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      DATABASE_URL: postgresql://postgres:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata
-      DB_URL: postgresql://postgres:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata
+      DATABASE_URL: postgresql://nikhil:ci-only-password@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia%2FKolkata
+      JWT_SECRET: ci-only-jwt-secret-for-testing-only-0123456789
 
     services:
       postgres:
         image: postgres:15-alpine
         env:
           POSTGRES_USER: nikhil
-          POSTGRES_PASSWORD: Mahi1234
+          POSTGRES_PASSWORD: ci-only-password
           POSTGRES_DB: bank_ledger
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U nikhil -d bank_ledger"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5

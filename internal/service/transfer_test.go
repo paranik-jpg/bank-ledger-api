@@ -6,13 +6,13 @@ import (
 )
 
 func TestTransferServiceValidation(t *testing.T) {
-	// A mock or nil db can test pure business validation without executing SQL
+	// A nil DB is safe here because invalid requests must fail before database access.
 	svc := &TransferService{db: nil}
 
 	tests := []struct {
-		name    string
-		dto     TransferDTO
-		wantErr error
+		name string
+		dto  TransferDTO
+		want error
 	}{
 		{
 			name: "Non-positive amount",
@@ -21,7 +21,7 @@ func TestTransferServiceValidation(t *testing.T) {
 				ToAccountID:   2,
 				Amount:        -50,
 			},
-			wantErr: ErrInvalidTransferAmount,
+			want: ErrInvalidTransferAmount,
 		},
 		{
 			name: "Zero amount",
@@ -30,7 +30,7 @@ func TestTransferServiceValidation(t *testing.T) {
 				ToAccountID:   2,
 				Amount:        0,
 			},
-			wantErr: ErrInvalidTransferAmount,
+			want: ErrInvalidTransferAmount,
 		},
 		{
 			name: "Identical source and destination",
@@ -39,15 +39,24 @@ func TestTransferServiceValidation(t *testing.T) {
 				ToAccountID:   5,
 				Amount:        100,
 			},
-			wantErr: ErrIdenticalAccounts,
+			want: ErrIdenticalAccounts,
+		},
+		{
+			name: "Identical accounts with positive amount",
+			dto: TransferDTO{
+				FromAccountID: 5,
+				ToAccountID:   5,
+				Amount:        1,
+			},
+			want: ErrIdenticalAccounts,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := svc.ExecuteTransfer(context.Background(), tt.dto)
-			if err != tt.wantErr {
-				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+			if err != tt.want {
+				t.Fatalf("expected error %v, got %v", tt.want, err)
 			}
 		})
 	}

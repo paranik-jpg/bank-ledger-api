@@ -74,24 +74,45 @@ Replace `<repository-url>` with the repository's actual Git URL.
 
 ### 2. Configure secrets before running
 
-The checked-in Compose configuration contains development credentials and a fallback JWT secret. **Do not use those values in production.** Change them before exposing the service, and avoid committing real secrets.
+The application requires a PostgreSQL connection URL and a JWT signing secret. Do not commit real credentials or secrets to the repository.
+
+For local development, create a `.env` file in the project root. The file is ignored by Git.
+
+Generate a strong JWT secret:
+
+```bash
+openssl rand -hex 32
+```
+
+Configure the following variables in `.env`:
+
+```dotenv
+POSTGRES_USER=your_database_user
+POSTGRES_PASSWORD=your_database_password
+POSTGRES_DB=bank_ledger
+DATABASE_URL=postgresql://your_database_user:your_database_password@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia%2FKolkata
+JWT_SECRET=your_generated_jwt_secret
+```
+
+Use your own local database credentials and the generated JWT secret. Keep `.env` private.
 
 The application supports these environment variables:
 
-| Variable | Purpose | Default / behavior |
-|---|---|---|
-| `PORT` | HTTP listening port | `:8080` |
-| `DATABASE_URL` | PostgreSQL connection URL | Falls back to `DB_URL`, then a development URL in `main.go` |
-| `DB_URL` | Alternative PostgreSQL connection URL | Used when `DATABASE_URL` is unset |
-| `JWT_SECRET` | HMAC signing secret for access tokens | Development fallback in `main.go`; set a strong secret explicitly |
+|    Variable    |                Purpose                |                   Behavior                    |
+|----------------|---------------------------------------|-----------------------------------------------|
+|     `PORT`     |          HTTP listening port          |              Defaults to `:8080`              |
+| `DATABASE_URL` |       PostgreSQL connection URL       |        Required unless `DB_URL` is set        |
+|    `DB_URL`    | Alternative PostgreSQL connection URL |       Used when `DATABASE_URL` is unset       |
+|  `JWT_SECRET`  | HMAC signing secret for access tokens | Required; must contain at least 32 characters |
 
-The connection URL must be reachable from where the API runs. Inside Compose, the database hostname is the service name `postgres`; from your host machine, it is normally `localhost`.
+The connection URL must be reachable from where the API runs. Inside Docker Compose, the database hostname is `postgres`; from the host machine, it is normally `localhost`.
 
 ### 3. Start with Docker Compose
 
-Review and update the credentials and `JWT_SECRET` in `docker-compose.yml`, then run:
+Create the `.env` file described above, then start the services:
 
 ```bash
+docker compose config --quiet
 docker compose up --build
 ```
 
@@ -116,25 +137,27 @@ To also delete the database volume and its stored data:
 docker compose down --volumes
 ```
 
-**Warning:** removing the volume permanently deletes the local database contents.
+**Warning:** removing the volume permanently deletes the local database contents. Changing `POSTGRES_PASSWORD` in `.env` does not automatically change the password of a database that has already been initialized in the existing volume.
 
 ### 4. Run locally without Docker (optional)
 
-Start PostgreSQL and create a database/user, then export the connection settings. For example:
+Start PostgreSQL and create a database and user. Then configure the connection settings in your shell:
 
 ```bash
 export PORT=8080
 export DATABASE_URL='postgresql://<user>:<password>@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia%2FKolkata'
-export JWT_SECRET='<replace-with-a-long-random-secret>'
+export JWT_SECRET="$(openssl rand -hex 32)"
 ```
 
-Replace the placeholders with your local database credentials. URL-encode reserved characters in the username or password when placing them in a connection URL.
+Replace the URL placeholders with your local database credentials. URL-encode reserved characters in the username or password when placing them in a connection URL.
 
-Apply the migrations using the `migrate` CLI. The Makefile's `DB_URL` is currently hard-coded for the development setup, so either update that value locally or run the migration command directly with your own connection URL:
+Apply the migrations using the `migrate` CLI:
 
 ```bash
-migrate -path db/migration -database "$DATABASE_URL" -verbose up
+make migrateup
 ```
+
+The Makefile reads `DATABASE_URL` from the environment, or falls back to the `DATABASE_URL` entry in `.env` when the variable is unset.
 
 Start the API:
 

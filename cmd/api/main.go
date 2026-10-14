@@ -25,10 +25,21 @@ func main() {
 	if serverPort != "" && serverPort[0] != ':' {
 		serverPort = ":" + serverPort
 	}
-	dbURL := getEnv("DATABASE_URL", getEnv("DB_URL", "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"))
-    jwtSecret := getEnv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
 
-	log.Printf("Connecting to database at: %s", dbURL)
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DB_URL")
+	}
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL (or DB_URL) must be set")
+	}
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if len(jwtSecret) < 32 {
+		log.Fatal("JWT_SECRET must be set to at least 32 characters")
+	}
+
+	log.Println("Connecting to database...")
 
 	// 1. Open DB pool & 2. Verify database connectivity
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
