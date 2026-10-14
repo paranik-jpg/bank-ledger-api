@@ -15,9 +15,10 @@ var (
 )
 
 type TransferParams struct {
-	FromAccountID int64 `json:"from_account_id"`
-	ToAccountID   int64 `json:"to_account_id"`
-	Amount        int64 `json:"amount"`
+	FromAccountID int64  `json:"from_account_id"`
+	ToAccountID   int64  `json:"to_account_id"`
+	Amount        int64  `json:"amount"`
+	InitiatedBy   string `json:"initiated_by"`
 }
 
 type TransferResult struct {
@@ -43,6 +44,16 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 		return result, err
 	}
 	defer tx.Rollback()
+
+	// Lock both accounts before any transfer or balance mutations.
+	fromAccount, _, err := lockAccounts(ctx, tx, arg.FromAccountID, arg.ToAccountID)
+	if err != nil {
+		return result, err
+	}
+
+	if fromAccount.Balance < arg.Amount {
+		return result, ErrInsufficientFunds
+	}
 
 	// 1. Record transfer row
 	transferQuery := `
@@ -102,13 +113,8 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 	return result, tx.Commit()
 }
 
-func updateBalances(
-	ctx context.Context,
-	tx *sql.Tx,
-	acc1ID, amount1 int64,
-	acc2ID, amount2 int64,
-) (acc1 Account, acc2 Account, err error) {
-	// Update and lock first account
+func updateBalances(ctx context.Context, tx *sql.Tx, acc1ID, amount1 int64, acc2ID, amount2 int64) (acc1 Account, acc2 Account, err error) {
+	// Update the first account's balance.
 	query := `
 		UPDATE accounts
 		SET balance = balance + $1
@@ -128,7 +134,7 @@ func updateBalances(
 		return acc1, acc2, ErrInsufficientFunds
 	}
 
-	// Update and lock second account
+	// Update the second account's balance.
 	err = tx.QueryRowContext(ctx, query, amount2, acc2ID).Scan(
 		&acc2.ID, &acc2.Owner, &acc2.Balance, &acc2.Currency, &acc2.CreatedAt,
 	)
@@ -143,4 +149,57 @@ func updateBalances(
 	}
 
 	return acc1, acc2, nil
+}
+
+func lockAccounts(ctx context.Context, tx *sql.Tx, fromAccountID, toAccountID int64) (fromAccount Account, toAccount Account, err error) {
+	firstID, secondID := fromAccountID, toAccountID
+
+	// Always acquire row locks in ascending account-ID order.
+	if firstID > secondID {
+		firstID, secondID = secondID, firstID
+	}
+
+	query := `
+        SELECT id, owner, balance, currency, created_at
+        FROM accounts
+        WHERE id = $1
+        FOR NO KEY UPDATE;
+    `
+
+	lockOne := func(id int64) (Account, error) {
+		var account Account
+
+		err := tx.QueryRowContext(ctx, query, id).Scan(
+			&account.ID,
+			&account.Owner,
+			&account.Balance,
+			&account.Currency,
+			&account.CreatedAt,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return account, ErrAccountNotFound
+		}
+		if err != nil {
+			return account, err
+		}
+
+		return account, nil
+	}
+
+	first, err := lockOne(firstID)
+	if err != nil {
+		return fromAccount, toAccount, err
+	}
+
+	second, err := lockOne(secondID)
+	if err != nil {
+		return fromAccount, toAccount, err
+	}
+
+	// Return the locked accounts in the caller's original order.
+	if fromAccountID == firstID {
+		return first, second, nil
+	}
+
+	return second, first, nil
 }
