@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -13,6 +14,7 @@ var (
 	ErrInvalidAmount       = errors.New("transfer amount must be positive")
 	ErrSameAccount         = errors.New("cannot transfer money to the same account")
 	ErrUnauthorizedAccount = errors.New("unauthorized access to source account")
+	ErrCurrencyMismatch    = errors.New("source and destination account currencies do not match")
 )
 
 type TransferParams struct {
@@ -47,7 +49,7 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 	defer tx.Rollback()
 
 	// Lock both accounts before any transfer or balance mutations.
-	fromAccount, _, err := lockAccounts(ctx, tx, arg.FromAccountID, arg.ToAccountID)
+	fromAccount, toAccount, err := lockAccounts(ctx, tx, arg.FromAccountID, arg.ToAccountID)
 	if err != nil {
 		return result, err
 	}
@@ -55,6 +57,10 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 	// Ensure the initiator owns the source account.
 	if fromAccount.Owner != arg.InitiatedBy {
 		return result, ErrUnauthorizedAccount
+	}
+
+	if fromAccount.Currency != toAccount.Currency {
+		return result, ErrCurrencyMismatch
 	}
 
 	if fromAccount.Balance < arg.Amount {
@@ -119,6 +125,19 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 	return result, tx.Commit()
 }
 
+func mapBalanceUpdateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+		return ErrInsufficientFunds
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAccountNotFound
+	}
+
+	return err
+}
+
 func updateBalances(ctx context.Context, tx *sql.Tx, acc1ID, amount1 int64, acc2ID, amount2 int64) (acc1 Account, acc2 Account, err error) {
 	// Update the first account's balance.
 	query := `
@@ -131,10 +150,7 @@ func updateBalances(ctx context.Context, tx *sql.Tx, acc1ID, amount1 int64, acc2
 		&acc1.ID, &acc1.Owner, &acc1.Balance, &acc1.Currency, &acc1.CreatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return acc1, acc2, ErrAccountNotFound
-		}
-		return acc1, acc2, err
+		return acc1, acc2, mapBalanceUpdateError(err)
 	}
 	if acc1.Balance < 0 {
 		return acc1, acc2, ErrInsufficientFunds
@@ -145,10 +161,7 @@ func updateBalances(ctx context.Context, tx *sql.Tx, acc1ID, amount1 int64, acc2
 		&acc2.ID, &acc2.Owner, &acc2.Balance, &acc2.Currency, &acc2.CreatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return acc1, acc2, ErrAccountNotFound
-		}
-		return acc1, acc2, err
+		return acc1, acc2, mapBalanceUpdateError(err)
 	}
 	if acc2.Balance < 0 {
 		return acc1, acc2, ErrInsufficientFunds

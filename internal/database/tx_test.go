@@ -2,8 +2,10 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"sync"
 	"testing"
 	"time"
@@ -287,5 +289,130 @@ func TestTransferTxRejectsUnauthorizedInitiator(t *testing.T) {
 	if gotB.Balance != initialBalance {
 		t.Errorf("unauthorized transfer changed destination balance: got %d, want %d",
 			gotB.Balance, initialBalance)
+	}
+}
+
+func TestTransferTxRejectsCurrencyMismatch(t *testing.T) {
+	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+
+	db, err := New(dbURL)
+	if err != nil {
+		t.Skipf("Skipping DB test: postgres instance unreachable: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	suffix := time.Now().UnixNano()
+	ownerA := fmt.Sprintf("currency_a_%d", suffix)
+	ownerB := fmt.Sprintf("currency_b_%d", suffix)
+
+	if _, err := db.CreateUser(ctx, ownerA, "test-hash", ownerA+"@example.com"); err != nil {
+		t.Fatalf("create first test user: %v", err)
+	}
+	if _, err := db.CreateUser(ctx, ownerB, "test-hash", ownerB+"@example.com"); err != nil {
+		t.Fatalf("create second test user: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+
+		if _, err := db.ExecContext(
+			cleanupCtx,
+			"DELETE FROM users WHERE username IN ($1, $2)",
+			ownerA,
+			ownerB,
+		); err != nil {
+			t.Errorf("clean up test users: %v", err)
+		}
+	})
+
+	const initialBalance int64 = 1_000_000
+
+	fromAccount, err := db.CreateAccount(ctx, ownerA, initialBalance, "INR")
+	if err != nil {
+		t.Fatalf("create source account: %v", err)
+	}
+	toAccount, err := db.CreateAccount(ctx, ownerB, initialBalance, "USD")
+	if err != nil {
+		t.Fatalf("create destination account: %v", err)
+	}
+
+	_, err = db.TransferTx(ctx, TransferParams{
+		FromAccountID: fromAccount.ID,
+		ToAccountID:   toAccount.ID,
+		Amount:        100,
+		InitiatedBy:   ownerA,
+	})
+
+	if !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("expected ErrCurrencyMismatch, got %v", err)
+	}
+
+	gotFrom, err := db.GetAccount(ctx, fromAccount.ID)
+	if err != nil {
+		t.Fatalf("read source account: %v", err)
+	}
+	gotTo, err := db.GetAccount(ctx, toAccount.ID)
+	if err != nil {
+		t.Fatalf("read destination account: %v", err)
+	}
+
+	if gotFrom.Balance != initialBalance {
+		t.Errorf("source balance changed: got %d, want %d",
+			gotFrom.Balance, initialBalance)
+	}
+	if gotTo.Balance != initialBalance {
+		t.Errorf("destination balance changed: got %d, want %d",
+			gotTo.Balance, initialBalance)
+	}
+}
+
+func TestMapBalanceUpdateError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{
+			name: "Postgres check violation maps to insufficient funds",
+			err: &pgconn.PgError{
+				Code: "23514",
+			},
+			want: ErrInsufficientFunds,
+		},
+		{
+			name: "missing account maps to account not found",
+			err:  sql.ErrNoRows,
+			want: ErrAccountNotFound,
+		},
+		{
+			name: "unrelated error is preserved",
+			err:  errors.New("connection lost"),
+			want: errors.New("connection lost"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapBalanceUpdateError(tt.err)
+
+			if tt.name == "unrelated error is preserved" {
+				if got == nil || got.Error() != tt.want.Error() {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+				return
+			}
+
+			if !errors.Is(got, tt.want) {
+				t.Fatalf("got %v, want error %v", got, tt.want)
+			}
+		})
 	}
 }
