@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -125,7 +126,7 @@ func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
 	var workers sync.WaitGroup
 	workers.Add(2)
 
-	runTransfers := func(fromID, toID int64) {
+	runTransfers := func(fromID, toID int64, initiatedBy string) {
 		defer workers.Done()
 		ready.Done()
 
@@ -137,6 +138,7 @@ func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
 				FromAccountID: fromID,
 				ToAccountID:   toID,
 				Amount:        transferAmount,
+				InitiatedBy:   initiatedBy,
 			})
 			outcomes <- transferOutcome{err: err}
 			if err != nil {
@@ -145,8 +147,8 @@ func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
 		}
 	}
 
-	go runTransfers(accountA.ID, accountB.ID)
-	go runTransfers(accountB.ID, accountA.ID)
+	go runTransfers(accountA.ID, accountB.ID, ownerA)
+	go runTransfers(accountB.ID, accountA.ID, ownerB)
 
 	// Don't start until both workers are ready.
 	ready.Wait()
@@ -203,5 +205,87 @@ func TestTransferTxConcurrentOpposingTransfers(t *testing.T) {
 			"expected balances to return to their initial values (%d, %d); got (%d, %d)",
 			initialBalance, initialBalance, balanceA, balanceB,
 		)
+	}
+}
+
+func TestTransferTxRejectsUnauthorizedInitiator(t *testing.T) {
+	dbURL := "postgresql://nikhil:Mahi1234@localhost:5432/bank_ledger?sslmode=disable&TimeZone=Asia/Kolkata"
+
+	db, err := New(dbURL)
+	if err != nil {
+		t.Skipf("Skipping DB test: postgres instance unreachable: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	suffix := time.Now().UnixNano()
+	ownerA := fmt.Sprintf("unauthorized_a_%d", suffix)
+	ownerB := fmt.Sprintf("unauthorized_b_%d", suffix)
+
+	if _, err := db.CreateUser(ctx, ownerA, "test-hash", ownerA+"@example.com"); err != nil {
+		t.Fatalf("create first test user: %v", err)
+	}
+	if _, err := db.CreateUser(ctx, ownerB, "test-hash", ownerB+"@example.com"); err != nil {
+		t.Fatalf("create second test user: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+
+		if _, err := db.ExecContext(
+			cleanupCtx,
+			"DELETE FROM users WHERE username IN ($1, $2)",
+			ownerA,
+			ownerB,
+		); err != nil {
+			t.Errorf("clean up test users: %v", err)
+		}
+	})
+
+	const initialBalance int64 = 1_000_000
+
+	accountA, err := db.CreateAccount(ctx, ownerA, initialBalance, "INR")
+	if err != nil {
+		t.Fatalf("create first test account: %v", err)
+	}
+	accountB, err := db.CreateAccount(ctx, ownerB, initialBalance, "INR")
+	if err != nil {
+		t.Fatalf("create second test account: %v", err)
+	}
+
+	_, err = db.TransferTx(ctx, TransferParams{
+		FromAccountID: accountA.ID,
+		ToAccountID:   accountB.ID,
+		Amount:        100,
+		InitiatedBy:   ownerB, // Not the owner of the source account.
+	})
+
+	if !errors.Is(err, ErrUnauthorizedAccount) {
+		t.Fatalf("expected ErrUnauthorizedAccount, got %v", err)
+	}
+
+	gotA, err := db.GetAccount(ctx, accountA.ID)
+	if err != nil {
+		t.Fatalf("read first account: %v", err)
+	}
+	gotB, err := db.GetAccount(ctx, accountB.ID)
+	if err != nil {
+		t.Fatalf("read second account: %v", err)
+	}
+
+	if gotA.Balance != initialBalance {
+		t.Errorf("unauthorized transfer changed source balance: got %d, want %d",
+			gotA.Balance, initialBalance)
+	}
+	if gotB.Balance != initialBalance {
+		t.Errorf("unauthorized transfer changed destination balance: got %d, want %d",
+			gotB.Balance, initialBalance)
 	}
 }

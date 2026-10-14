@@ -8,10 +8,11 @@ import (
 )
 
 var (
-	ErrInsufficientFunds = errors.New("insufficient funds in source account")
-	ErrAccountNotFound   = errors.New("account not found")
-	ErrInvalidAmount     = errors.New("transfer amount must be positive")
-	ErrSameAccount       = errors.New("cannot transfer money to the same account")
+	ErrInsufficientFunds   = errors.New("insufficient funds in source account")
+	ErrAccountNotFound     = errors.New("account not found")
+	ErrInvalidAmount       = errors.New("transfer amount must be positive")
+	ErrSameAccount         = errors.New("cannot transfer money to the same account")
+	ErrUnauthorizedAccount = errors.New("unauthorized access to source account")
 )
 
 type TransferParams struct {
@@ -49,6 +50,11 @@ func (db *DB) TransferTx(ctx context.Context, arg TransferParams) (TransferResul
 	fromAccount, _, err := lockAccounts(ctx, tx, arg.FromAccountID, arg.ToAccountID)
 	if err != nil {
 		return result, err
+	}
+
+	// Ensure the initiator owns the source account.
+	if fromAccount.Owner != arg.InitiatedBy {
+		return result, ErrUnauthorizedAccount
 	}
 
 	if fromAccount.Balance < arg.Amount {
