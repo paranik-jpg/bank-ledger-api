@@ -73,4 +73,46 @@ func TestTransferHandler(t *testing.T) {
 			t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
 		}
 	})
+
+	t.Run("Forbidden - Unauthorized Transfer Mapping", func(t *testing.T) {
+		mockSvc := &MockTransferService{
+			ExecuteTransferFn: func(ctx context.Context, req service.TransferDTO) (database.TransferResult, error) {
+				return database.TransferResult{}, service.ErrUnauthorizedTransfer
+			},
+		}
+		h := NewTransferHandler(mockSvc)
+
+		body := bytes.NewBufferString(`{"from_account_id":1,"to_account_id":2,"amount":100}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/transfers", body)
+		ctx := context.WithValue(req.Context(), middleware.UserContextKey, "testuser")
+		req = req.WithContext(ctx)
+
+		rec := httptest.NewRecorder()
+		h.CreateTransfer(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+		}
+	})
+
+	t.Run("Bad Request - Currency Mismatch Mapping", func(t *testing.T) {
+		mockSvc := &MockTransferService{
+			ExecuteTransferFn: func(ctx context.Context, req service.TransferDTO) (database.TransferResult, error) {
+				return database.TransferResult{}, service.ErrCurrencyMismatch
+			},
+		}
+		h := NewTransferHandler(mockSvc)
+
+		body := bytes.NewBufferString(`{"from_account_id":1,"to_account_id":2,"amount":100}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/transfers", body)
+		ctx := context.WithValue(req.Context(), middleware.UserContextKey, "testuser")
+		req = req.WithContext(ctx)
+
+		rec := httptest.NewRecorder()
+		h.CreateTransfer(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+		}
+	})
 }

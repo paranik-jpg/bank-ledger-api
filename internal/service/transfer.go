@@ -13,6 +13,8 @@ var (
 	ErrIdenticalAccounts     = errors.New("cannot transfer to the same account")
 	ErrInsufficientBalance   = errors.New("insufficient balance")
 	ErrAccountDoesNotExist   = errors.New("account does not exist")
+	ErrUnauthorizedTransfer  = errors.New("unauthorized transfer")
+	ErrCurrencyMismatch      = errors.New("account currencies do not match")
 )
 
 type TransferDTO struct {
@@ -48,8 +50,15 @@ func (s *TransferService) ExecuteTransfer(ctx context.Context, req TransferDTO) 
 		FromAccountID: req.FromAccountID,
 		ToAccountID:   req.ToAccountID,
 		Amount:        req.Amount,
+		InitiatedBy:   req.InitiatedBy,
 	})
 	if err != nil {
+		if errors.Is(err, database.ErrUnauthorizedAccount) {
+			return database.TransferResult{}, ErrUnauthorizedTransfer
+		}
+		if errors.Is(err, database.ErrCurrencyMismatch) {
+			return database.TransferResult{}, ErrCurrencyMismatch
+		}
 		if errors.Is(err, database.ErrInsufficientFunds) {
 			return database.TransferResult{}, ErrInsufficientBalance
 		}

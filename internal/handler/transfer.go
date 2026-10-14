@@ -84,6 +84,10 @@ func (h *TransferHandler) CreateTransfer(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusNotFound, "One or more accounts not found")
 		case errors.Is(err, service.ErrInvalidTransferAmount), errors.Is(err, service.ErrIdenticalAccounts):
 			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, service.ErrUnauthorizedTransfer):
+			writeError(w, http.StatusForbidden, "Not authorized to transfer from this account")
+		case errors.Is(err, service.ErrCurrencyMismatch):
+			writeError(w, http.StatusBadRequest, "Account currencies do not match")
 		default:
 			writeError(w, http.StatusInternalServerError, "An unexpected error occurred")
 		}
