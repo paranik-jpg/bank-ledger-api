@@ -1,0 +1,5 @@
+Third-Party Notices
+===================
+
+Portions of migration tooling derived from golang-migrate (https://github.com/golang-migrate/migrate),
+Copyright (c) 2016 Matthias Kadenbach, Copyright (c) 2018 Dale Hui, licensed under the MIT License.
